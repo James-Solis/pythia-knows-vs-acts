@@ -104,10 +104,31 @@ Named entities show a sharp redistribution at layer 16 that originates at layer 
 ## Repository layout
 
 ```
-setup.py              # model loader + top_k_next / prob_of_token (shared by all scripts)
-01*..15*.py           # the numbered investigation, in order
+setup.py            # model loader + top_k_next / prob_of_token (shared by all scripts)
+make_figure.py      # renders the headline figure from results CSVs
 requirements.txt
-results_*/            # per-script CSV/PNG output (git-ignored; regenerate by running)
+experiments/        # the investigation, grouped by stage and run in order
+  01_baseline/
+  02_dose_response/
+  03_logit_lens/
+  04_layer_localization/      # layer-16 deep dives + persistence/generalization
+  05_activation_patching/
+  06_full_layer_survey/
+  07_activation_steering/
+  08_component_decomposition/
+  09_mlp15_amplifier/
+  10_early_layer_probe/
+  11_mechanistic_traces/      # single-prompt traces (3+5, Germany)
+  12_unembedding_geometry/    # geometry + the pathway boundary (incl. colors)
+results_*/          # per-script CSV/PNG output (git-ignored; created at repo root on run)
+figures/            # committed figure(s) produced by make_figure.py
+```
+
+Run scripts from the repo root so their imports resolve and output collects in one place, e.g.:
+
+```bash
+python experiments/01_baseline/01_baseline.py
+python experiments/12_unembedding_geometry/15_color_geometry.py
 ```
 
 ## Reproducing
