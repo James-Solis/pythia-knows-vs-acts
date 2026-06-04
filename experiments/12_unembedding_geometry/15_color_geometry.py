@@ -30,13 +30,25 @@ Same three measurements per pair:
 Plus one extra measurement specific to colors:
   [A4] Is the country-capital circuit's four specific heads also top
        contributors for colors? Or are different heads doing the work?
-       This is the core question for whether the circuit is general.
+
+IMPORTANT: the four CIRCUIT_HEADS were identified on pythia-1.4b. They are
+architecture-specific. The [A4] cross-check therefore only runs when the
+loaded model IS the model the circuit was found on (CIRCUIT_MODEL). For any
+other model (e.g. pythia-2.8b), [A4] is skipped, because those layer/head
+indices point at unrelated heads there -- the circuit must be re-discovered
+at that scale before a cross-check is meaningful. The [A2]/[A3] head-discovery
+runs on every model and reveals whichever heads do the work.
+
+Run:
+    python 15_color_geometry.py                    # defaults to pythia-1.4b
+    python 15_color_geometry.py --model pythia-2.8b
 
 Output:
-  results_color_geometry/<fact>_*.csv
-  results_color_geometry/summary.csv
+  results_color_geometry/<model>/<fact>_*.csv
+  results_color_geometry/<model>/summary.csv
 """
 import os
+import argparse
 import torch
 import torch.nn.functional as F
 import pandas as pd
@@ -46,14 +58,29 @@ _sys.path.insert(0, _os.path.abspath(_os.path.join(_os.path.dirname(__file__), _
 # ---------------------------------------------------------------------------------
 from setup import get_model
 
-os.makedirs("results_color_geometry", exist_ok=True)
+parser = argparse.ArgumentParser(description="Color-attribute geometry; tests the named-entity circuit on colors.")
+parser.add_argument("--model", default="pythia-1.4b",
+                    help="TransformerLens model name (e.g. pythia-1.4b, pythia-2.8b)")
+args = parser.parse_args()
 
-model = get_model()
+OUTDIR = f"results_color_geometry/{args.model}"
+os.makedirs(OUTDIR, exist_ok=True)
+
+model = get_model(args.model)
 n_layers = model.cfg.n_layers
 n_heads = model.cfg.n_heads
 
-# The four heads identified as the country-capital circuit
-CIRCUIT_HEADS = [(17, 6), (15, 7), (17, 0), (13, 1)]
+# The four heads identified as the country-capital circuit -- ON pythia-1.4b.
+# Only meaningful for that model; see header note.
+CIRCUIT_MODEL = "pythia-1.4b"
+CIRCUIT_HEADS = [(17, 6), (15, 7), (17, 0), (13, 1)] if args.model == CIRCUIT_MODEL else []
+RUN_CIRCUIT_CHECK = args.model == CIRCUIT_MODEL
+
+print(f"Model: {args.model}  (layers={n_layers}, heads={n_heads})  -> {OUTDIR}/")
+if not RUN_CIRCUIT_CHECK:
+    print(f"  NOTE: [A4] circuit-head cross-check is SKIPPED. The four circuit heads")
+    print(f"  were identified on {CIRCUIT_MODEL}; their indices are not comparable on")
+    print(f"  {args.model}. Re-run circuit discovery at this scale for a real cross-check.")
 
 
 def safe_id(tok_str):
@@ -256,55 +283,58 @@ def analyze_pair(pair):
           f"frac_answer={mean_frac_answer:.3f}  "
           f"ratio={mean_frac_topic/(mean_frac_answer+1e-9):.2f}")
 
-    # [A4] Specifically check the country-capital circuit heads
-    print(f"\n[A4] Country-capital circuit heads' contribution to {answer!r}:")
-    circuit_rows = []
-    for (L, h) in CIRCUIT_HEADS:
-        z = cache["z", L][0, -1]
-        W_O_L = model.W_O[L]
-        head_out = torch.einsum("hd,hdm->hm", z.float(), W_O_L.float())
-        vec = head_out[h].float()
-        contrib = project_to_token(vec, ids["answer"])
-        top20 = logit_lens_topk(vec, k=20)
-        t_rank = next((i for i, (tk, _) in enumerate(top20) if tk == topic), None)
-        a_rank = next((i for i, (tk, _) in enumerate(top20) if tk == answer), None)
-        proj_t = (vec @ u_topic).item()
-        proj_a = (vec @ u_answer).item()
-        in_top6 = (L, h) in [(LL, hh) for LL, hh, _, _ in top_heads]
+    # [A4] Specifically check the country-capital circuit heads -- ONLY on the
+    # model the circuit was identified on. Skipped otherwise (see header note).
+    n_circuit_in_top6 = None
+    if RUN_CIRCUIT_CHECK:
+        print(f"\n[A4] Country-capital circuit heads' contribution to {answer!r}:")
+        circuit_rows = []
+        for (L, h) in CIRCUIT_HEADS:
+            z = cache["z", L][0, -1]
+            W_O_L = model.W_O[L]
+            head_out = torch.einsum("hd,hdm->hm", z.float(), W_O_L.float())
+            vec = head_out[h].float()
+            contrib = project_to_token(vec, ids["answer"])
+            top20 = logit_lens_topk(vec, k=20)
+            t_rank = next((i for i, (tk, _) in enumerate(top20) if tk == topic), None)
+            a_rank = next((i for i, (tk, _) in enumerate(top20) if tk == answer), None)
+            proj_t = (vec @ u_topic).item()
+            proj_a = (vec @ u_answer).item()
+            in_top6 = (L, h) in [(LL, hh) for LL, hh, _, _ in top_heads]
 
-        marker = "  [in top-6]" if in_top6 else ""
-        print(f"    L{L:02d} head_{h:2d}  contrib={contrib:+.2f}  "
-              f"topic_rank={t_rank}  answer_rank={a_rank}  "
-              f"frac_topic={abs(proj_t)/(vec.norm().item()+1e-9):.3f}  "
-              f"frac_answer={abs(proj_a)/(vec.norm().item()+1e-9):.3f}{marker}")
-        print(f"        head_top3={top20[:3]}")
-        circuit_rows.append({
-            "layer": L, "head": h,
-            "contrib_to_answer": round(contrib, 2),
-            "topic_rank_in_top20": t_rank,
-            "answer_rank_in_top20": a_rank,
-            "frac_topic": round(abs(proj_t) / (vec.norm().item() + 1e-9), 4),
-            "frac_answer": round(abs(proj_a) / (vec.norm().item() + 1e-9), 4),
-            "in_top6_for_this_fact": in_top6,
-            "head_top3": str(top20[:3]),
-        })
+            marker = "  [in top-6]" if in_top6 else ""
+            print(f"    L{L:02d} head_{h:2d}  contrib={contrib:+.2f}  "
+                  f"topic_rank={t_rank}  answer_rank={a_rank}  "
+                  f"frac_topic={abs(proj_t)/(vec.norm().item()+1e-9):.3f}  "
+                  f"frac_answer={abs(proj_a)/(vec.norm().item()+1e-9):.3f}{marker}")
+            print(f"        head_top3={top20[:3]}")
+            circuit_rows.append({
+                "layer": L, "head": h,
+                "contrib_to_answer": round(contrib, 2),
+                "topic_rank_in_top20": t_rank,
+                "answer_rank_in_top20": a_rank,
+                "frac_topic": round(abs(proj_t) / (vec.norm().item() + 1e-9), 4),
+                "frac_answer": round(abs(proj_a) / (vec.norm().item() + 1e-9), 4),
+                "in_top6_for_this_fact": in_top6,
+                "head_top3": str(top20[:3]),
+            })
+        pd.DataFrame(circuit_rows).to_csv(
+            f"{OUTDIR}/{label}_circuit_heads.csv", index=False)
+        n_circuit_in_top6 = sum(1 for (L, h) in CIRCUIT_HEADS
+                                if (L, h) in [(LL, hh) for LL, hh, _, _ in top_heads])
 
     # Save
     pd.DataFrame(head_rank_rows).to_csv(
-        f"results_color_geometry/{label}_head_ranks.csv", index=False)
+        f"{OUTDIR}/{label}_head_ranks.csv", index=False)
     df_decomp.to_csv(
-        f"results_color_geometry/{label}_decomposition.csv", index=False)
-    pd.DataFrame(circuit_rows).to_csv(
-        f"results_color_geometry/{label}_circuit_heads.csv", index=False)
+        f"{OUTDIR}/{label}_decomposition.csv", index=False)
 
     del cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-    n_circuit_in_top6 = sum(1 for (L, h) in CIRCUIT_HEADS
-                            if (L, h) in [(LL, hh) for LL, hh, _, _ in top_heads])
-
     return {
+        "model": args.model,
         "label": label,
         "topic": topic,
         "answer": answer,
@@ -329,15 +359,15 @@ for pair in PAIRS:
         summary_rows.append(result)
 
 summary_df = pd.DataFrame(summary_rows)
-summary_df.to_csv("results_color_geometry/summary.csv", index=False)
+summary_df.to_csv(f"{OUTDIR}/summary.csv", index=False)
 
 print(f"\n\n{'='*72}")
-print("CROSS-PAIR SUMMARY")
+print(f"CROSS-PAIR SUMMARY  ({args.model})")
 print(f"{'='*72}")
 print(summary_df.to_string(index=False))
 
 print(f"\n{'='*72}")
-print("Compare to country-capital results:")
+print("1.4B reference (country-capital):")
 print("  Country-capital mean cosine (six pairs): ~0.47")
 print("  Country-capital mean P(capital) at output: ~0.59")
 print("  Country-capital mean frac_country/frac_capital ratio: ~1.20")
@@ -355,4 +385,8 @@ print()
 print("  Banana is the expected odd one out: addendum 2 found the model")
 print("  represents banana color as variable, not canonical. Expect weaker")
 print("  geometric encoding and a less confident output.")
+if not RUN_CIRCUIT_CHECK:
+    print()
+    print(f"  ({args.model}: circuit-head overlap not computed -- indices are")
+    print(f"   1.4B-specific. n_circuit_heads_in_top6 is blank in the summary.)")
 print(f"{'='*72}")

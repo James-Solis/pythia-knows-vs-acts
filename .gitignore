@@ -31,3 +31,5 @@ results_color_geometry/
 
 # OS
 .DS_Store
+
+results_*/

@@ -26,14 +26,21 @@ For each pair, three measurements (same as experiment 13):
   [A2] Top-contributing attention heads' top-20 vocab projections
   [A3] Head output decomposition along country vs capital direction
 
-Cross-tier comparison summary at the end: does the mechanism's strength
-(cosine, head ratios, output confidence) vary systematically with training
-prominence?
+Cross-tier comparison summary at the end.
 
-Output: results_geometry_scale/<pair>_*.csv (one set per pair that runs),
-       results_geometry_scale/summary.csv (cross-pair comparison)
+This script is model-agnostic: it discovers the top-contributing heads for
+whichever model is loaded, so it can be run across Pythia sizes to test how
+the geometry scales.
+
+Run:
+    python 14_geometry_six_pairs.py                    # defaults to pythia-1.4b
+    python 14_geometry_six_pairs.py --model pythia-2.8b
+
+Output: results_geometry_scale/<model>/<pair>_*.csv (one set per pair),
+        results_geometry_scale/<model>/summary.csv (cross-pair comparison)
 """
 import os
+import argparse
 import torch
 import torch.nn.functional as F
 import pandas as pd
@@ -43,11 +50,18 @@ _sys.path.insert(0, _os.path.abspath(_os.path.join(_os.path.dirname(__file__), _
 # ---------------------------------------------------------------------------------
 from setup import get_model
 
-os.makedirs("results_geometry_scale", exist_ok=True)
+parser = argparse.ArgumentParser(description="Country-capital geometry across 6 pairs.")
+parser.add_argument("--model", default="pythia-1.4b",
+                    help="TransformerLens model name (e.g. pythia-1.4b, pythia-2.8b)")
+args = parser.parse_args()
 
-model = get_model()
+OUTDIR = f"results_geometry_scale/{args.model}"
+os.makedirs(OUTDIR, exist_ok=True)
+
+model = get_model(args.model)
 n_layers = model.cfg.n_layers
 n_heads = model.cfg.n_heads
+print(f"Model: {args.model}  (layers={n_layers}, heads={n_heads})  -> {OUTDIR}/")
 
 
 def safe_id(tok_str):
@@ -255,15 +269,16 @@ def analyze_pair(pair, tier_label):
 
     # Save
     pd.DataFrame(head_rank_rows).to_csv(
-        f"results_geometry_scale/{label}_head_ranks.csv", index=False)
+        f"{OUTDIR}/{label}_head_ranks.csv", index=False)
     df_decomp.to_csv(
-        f"results_geometry_scale/{label}_decomposition.csv", index=False)
+        f"{OUTDIR}/{label}_decomposition.csv", index=False)
 
     del cache
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
     return {
+        "model": args.model,
         "label": label,
         "tier": tier_label,
         "country": country_str,
@@ -289,11 +304,11 @@ for pair in tier2:
     summary_rows.append(analyze_pair(pair, "TIER 2"))
 
 summary_df = pd.DataFrame(summary_rows)
-summary_df.to_csv("results_geometry_scale/summary.csv", index=False)
+summary_df.to_csv(f"{OUTDIR}/summary.csv", index=False)
 
 # Tier-wise aggregate
 print(f"\n\n{'='*72}")
-print("CROSS-TIER SUMMARY")
+print(f"CROSS-TIER SUMMARY  ({args.model})")
 print(f"{'='*72}")
 print(summary_df.to_string(index=False))
 
@@ -321,7 +336,7 @@ print("Interpretation guide:")
 print()
 print("If tier 1 and tier 2 show SIMILAR patterns (cosine, ratios, head structure),")
 print("the country-amplification mechanism is general, not training-frequency-")
-print("dependent. The mechanism is part of how Pythia handles country->capital")
+print("dependent. The mechanism is part of how the model handles country->capital")
 print("retrieval, regardless of how much it 'knows' a specific pair.")
 print()
 print("If tier 1 shows clean retrieval (high P(capital), capital is top-1) and")
@@ -332,4 +347,7 @@ print()
 print("If tier 2 shows qualitatively different head behavior (e.g., heads no")
 print("longer write country-flavored output), the mechanism itself is")
 print("training-frequency-dependent and only emerges for well-trained pairs.")
+print()
+print("Cross-MODEL: diff this summary.csv against another size's summary.csv")
+print("(e.g. pythia-1.4b vs pythia-2.8b) to see whether the geometry scales.")
 print(f"{'='*72}")
