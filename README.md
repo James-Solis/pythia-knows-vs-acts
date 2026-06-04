@@ -310,7 +310,7 @@ are for orientation rather than a formal bibliography.
   reference for the causal-intervention methodology used here.
 
 Findings, code, and any errors are the author's own. This is independent
-research and is not affiliated with Anthropic or EleutherAI.
+research and is not affiliated with Microsoft, Anthropic, or EleutherAI.
 
 ---
 
